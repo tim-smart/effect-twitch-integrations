@@ -1,9 +1,9 @@
-import { Deferred, Effect, Layer } from "effect";
-import { RedirectServer } from "./redirect-server-service";
-import { SpotifyConfigService } from "./spotify-config-service";
-import { Browser } from "./browser";
-import { requestAccessToken } from "./spotify-service";
 import { BunRuntime } from "@effect/platform-bun";
+import { Effect } from "effect";
+import { Browser } from "./browser";
+import { RedirectServer } from "./redirect-server-service";
+import { RedirectServerConfig, SpotifyConfig } from "./spotify-config-service";
+import { requestAccessToken } from "./spotify-service";
 
 const BunTime = {
   funTime: BunRuntime.runMain,
@@ -28,19 +28,16 @@ const scopes = [
   "user-read-private",
 ];
 
-const MainLive = Layer.merge(SpotifyConfigService.Live, RedirectServer.Live);
-
 const getAccessToken = Effect.gen(function* () {
-  const config = yield* SpotifyConfigService;
+  const config = yield* SpotifyConfig;
+  const redirectConfig = yield* RedirectServerConfig;
   const redirectServer = yield* RedirectServer;
-
-  const mailbox = yield* redirectServer.getMailbox();
 
   const searchParams = new URLSearchParams({
     response_type: "code",
     client_id: config.clientId,
     scope: scopes.join(" "),
-    redirect_uri: `http://localhost:${config.port}/${config.redirectServerPath}`,
+    redirect_uri: `http://localhost:${redirectConfig.port}/${redirectConfig.path}`,
     state: "foo",
     show_dialog: "true",
   });
@@ -51,8 +48,7 @@ const getAccessToken = Effect.gen(function* () {
 
   yield* Browser.open(authorizeUrl);
 
-  const code = yield* Deferred.await(mailbox);
-
+  const code = yield* redirectServer.code;
   const accessToken = yield* requestAccessToken(code);
 
   yield* Effect.promise(() =>
@@ -61,6 +57,6 @@ const getAccessToken = Effect.gen(function* () {
       JSON.stringify(accessToken, null, 2)
     )
   );
-}).pipe(Effect.provide(MainLive));
+}).pipe(Effect.provide(RedirectServer.Live));
 
 BunTime.funTime(getAccessToken);

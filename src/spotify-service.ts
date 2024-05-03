@@ -1,14 +1,16 @@
+import * as Http from "@effect/platform/HttpClient";
 import { SpotifyApi, type AccessToken } from "@spotify/web-api-ts-sdk";
-import { Context, Data, Effect, Encoding, Layer, Queue, Secret } from "effect";
+import { Context, Data, Effect, Layer, Queue, Secret } from "effect";
 import { Message, MessagePubSub } from "./message-pubsub";
-import { SpotifyConfigService } from "./spotify-config-service";
+import { RedirectServerConfig, SpotifyConfig } from "./spotify-config-service";
+import { Schema } from "@effect/schema";
 
 export class SpotifyError extends Data.TaggedError("SpotifyError")<{
   cause: unknown;
 }> {}
 
 const make = Effect.gen(function* () {
-  const config = yield* SpotifyConfigService;
+  const config = yield* SpotifyConfig;
 
   const client = SpotifyApi.withAccessToken(
     config.clientId,
@@ -27,9 +29,7 @@ export class SpotifyApiClient extends Context.Tag("spotify-api-client")<
   SpotifyApiClient,
   Effect.Effect.Success<typeof make>
 >() {
-  static Live = Layer.scoped(this, make).pipe(
-    Layer.provide(SpotifyConfigService.Live)
-  );
+  static Live = Layer.scoped(this, make);
 }
 
 export const SpotifyService = Layer.scopedDiscard(
@@ -67,44 +67,34 @@ export const SpotifyService = Layer.scopedDiscard(
   })
 ).pipe(Layer.provide(SpotifyApiClient.Live), Layer.provide(MessagePubSub.Live));
 
-export function requestAccessToken(code: string) {
-  return Effect.gen(function* () {
-    const config = yield* SpotifyConfigService;
-    const authorizationHeader = `Basic ${Encoding.encodeBase64(
-      `${config.clientId}:${Secret.value(config.clientSecret)}`
-    )}`;
+const AccessToken = Schema.Struct({
+  access_token: Schema.String,
+  token_type: Schema.String,
+  expires_in: Schema.Number,
+  refresh_token: Schema.String,
+  expires: Schema.optional(Schema.Number),
+});
 
-    // TODO: Refactor to platform HttpClient
-    const token: AccessToken = yield* Effect.tryPromise({
-      try: () =>
-        fetch("https://accounts.spotify.com/api/token", {
-          method: "POST",
-          headers: {
-            Authorization: authorizationHeader,
-            "content-type": "application/x-www-form-urlencoded",
-          },
-          body: encodeFormData({
-            code,
-            redirect_uri: `http://localhost:${config.port}/${config.redirectServerPath}`,
-            grant_type: "authorization_code",
-          }),
-        }).then((res) => res.json()),
-      catch: (error) => {
-        return new Error(
-          `An error occured while requesting Spotify Access Token: ${error}`
-        );
-      },
-    });
+export function requestAccessToken(code: string) {
+  return Effect.gen(function* (_) {
+    const spotify = yield* SpotifyConfig;
+    const config = yield* RedirectServerConfig;
+
+    const token = yield* _(
+      Http.request.post("https://accounts.spotify.com/api/token"),
+      Http.request.basicAuth(
+        spotify.clientId,
+        Secret.value(spotify.clientSecret)
+      ),
+      Http.request.urlParamsBody({
+        code,
+        redirect_uri: `http://localhost:${config.port}/${config.path}`,
+        grant_type: "authorization_code",
+      }),
+      Http.client.fetchOk,
+      Http.response.schemaBodyJsonScoped(AccessToken)
+    );
 
     return token;
   });
-}
-
-function encodeFormData(data: object) {
-  return Object.keys(data)
-    .map(
-      // @ts-expect-error
-      (key) => encodeURIComponent(key) + "=" + encodeURIComponent(data[key])
-    )
-    .join("&");
 }
